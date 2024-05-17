@@ -43,27 +43,27 @@ impl Cache {
         cache_lock.insert(key, (value, expire_time));
     }
 
-    pub fn get(&self, key: String, value: &mut String, refresh: bool) -> bool {
+    pub fn get(&self, key: &str, refresh: bool) -> Option<String> {
         let mut cache_lock = self.cache.lock().unwrap();
-        if let Some((val, expire_time)) = cache_lock.get_mut(&key) {
+        if let Some((val, expire_time)) = cache_lock.get_mut(key) {
             if *expire_time > SystemTime::now() {
-                *value = val.clone();
-                if refresh {
+                if  refresh {
                     *expire_time = SystemTime::now() + self.expiration_time;
                 }
-                return true;
+                return Some(val.clone());
             } else {
-                cache_lock.remove(&key);
+                cache_lock.remove(key);
             }
         }
-        false
+        None
     }
+    
 
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::Relaxed)
     }
 
-    pub fn get_expiration_time(&self) -> Duration {
+    pub fn _get_expiration_time(&self) -> Duration {
         self.expiration_time
     }
 }

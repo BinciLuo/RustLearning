@@ -1,25 +1,22 @@
 mod cache;
+mod dns;
 mod utils;
-use log;
+mod tests;
+use std::{
+    sync::{Arc, Mutex},
+    thread::JoinHandle,
+};
+
+use log::{self, LogLevel};
+
+use crate::dns::DNSServer;
 
 fn main() {
-    // Test log
-    let logger = log::Logger::new("MyLogger", log::LogLevel::Debug);
-    logger.log(log::LogLevel::Warning, &logger);
-    logger.log(log::LogLevel::Fatal, logger.get_log_level());
-    logger.log(log::LogLevel::Info, "This is an info message.");
-    logger.log(log::LogLevel::Debug, "This is a debug message.");
-    logger.log(log::LogLevel::Error, "This is an error message.");
-
-    // Test utils
-    let json_data = utils::read_json_file("config.json").expect("Failed to read JSON file");
-    logger.log(log::LogLevel::Debug, format!("JSON data: {:?}", json_data));
-    
-    let shell_output =
-        utils::exec_shell_command("echo Hello, World!").expect("Failed to execute shell command");
-    println!("Shell command output: {}", shell_output);
-
-    // Test cache
-    let cache = cache::Cache::new(10);
-    
+    let dns_server = Arc::new(Mutex::new(DNSServer::new("Local DNS", LogLevel::Debug)));
+    let mut handles = Vec::<JoinHandle<()>>::new();
+    DNSServer::run_listening(&dns_server, &mut handles);
+    DNSServer::run_control(&dns_server, &mut handles);
+    for handle in handles {
+        handle.join().unwrap();
+    }
 }

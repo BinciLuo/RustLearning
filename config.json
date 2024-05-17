@@ -1,0 +1,7 @@
+{
+    "dns_config": "dns_config.json",
+    "dns_port": 20053,
+    "remote_dns_addr":  "8.8.8.8",
+    "name": "Local DNS",
+    "cache_time": 5
+}
