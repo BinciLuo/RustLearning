@@ -48,6 +48,7 @@ pub struct DNSServer {
     cache: Cache,
     stop_request: AtomicBool,
     exit: AtomicBool,
+    handles: Vec::<JoinHandle<()>>,
 }
 
 impl DNSServer {
@@ -95,7 +96,12 @@ impl DNSServer {
             cache,
             stop_request: AtomicBool::new(false),
             exit: AtomicBool::new(false),
+            handles: Vec::<JoinHandle<()>>::new(),
         }
+    }
+
+    pub fn add_handle(&mut self, value: JoinHandle<()>){
+        self.handles.push(value)
     }
 
     fn _load_dns_config(&mut self, config_file: &str) {
@@ -271,8 +277,9 @@ impl DNSServer {
         self.exit.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    pub fn run_listening(arc_mutex_dns: &Arc<Mutex<Self>>, handles: &mut Vec<JoinHandle<()>>) {
+    pub fn run_listening(arc_mutex_dns: &Arc<Mutex<Self>>) {
         let cloned_dns = Arc::clone(&arc_mutex_dns);
+        let cloned_dns_for_add_handle = Arc::clone(&arc_mutex_dns);
         let handle = thread::spawn(move || loop {
             sleep(Duration::from_micros(1));
             let mut dns_server_copy = cloned_dns.lock().unwrap();
@@ -281,13 +288,15 @@ impl DNSServer {
             }
             dns_server_copy.processing();
         });
-        handles.push(handle);
+        
+        cloned_dns_for_add_handle.lock().unwrap().add_handle(handle);
     }
 
-    pub fn run_control(arc_mutex_dns: &Arc<Mutex<Self>>, handles: &mut Vec<JoinHandle<()>>) {
+    pub fn run_control(arc_mutex_dns: &Arc<Mutex<Self>>) {
         let mut stdin_channel: std::sync::mpsc::Receiver<String> =
             crate::utils::spawn_stdin_channel();
         let cloned_dns = Arc::clone(&arc_mutex_dns);
+        let cloned_dns_for_add_handle = Arc::clone(&arc_mutex_dns);
         let handle = thread::spawn(move || loop {
             sleep(Duration::from_micros(1));
             let mut dns_server_copy = cloned_dns.lock().unwrap();
@@ -297,7 +306,19 @@ impl DNSServer {
             dns_server_copy.commanding(&mut stdin_channel);
             io::stdout().flush().unwrap();
         });
-        handles.push(handle);
+        
+        cloned_dns_for_add_handle.lock().unwrap().add_handle(handle);
+    }
+
+    pub fn wait_exit(arc_mutex_dns: Arc<Mutex<Self>>){
+        let mut handles = vec![];
+        {
+            let mut dns_server_guard = arc_mutex_dns.lock().unwrap();
+            handles.append(&mut dns_server_guard.handles);
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
     }
 }
 
