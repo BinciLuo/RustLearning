@@ -48,11 +48,28 @@ pub struct DNSServer {
     cache: Cache,
     stop_request: AtomicBool,
     exit: AtomicBool,
-    handles: Vec::<JoinHandle<()>>,
+    handles: Vec<JoinHandle<()>>,
 }
 
 impl DNSServer {
+    fn load_config_file(file_path: &str) -> io::Result<String> {
+        let mut file = File::open(file_path)?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        Ok(contents)
+    }
+
+    fn parse_dns_config(contents: &str) -> Result<HashMap<String, String>, serde_json::Error> {
+        let data: Vec<DNSRecord> = serde_json::from_str(contents)?;
+        let dns_config = data
+            .into_iter()
+            .map(|record| (record.domain, record.ip))
+            .collect();
+        Ok(dns_config)
+    }
+
     pub fn new(config_fp: &str, loglevel: LogLevel) -> Self {
+        // Read config
         let mut file = File::open("config.json").expect("Unable to open file");
         let mut contents = String::new();
         file.read_to_string(&mut contents)
@@ -61,29 +78,25 @@ impl DNSServer {
 
         // Set Logger
         let logger = Logger::new(config.name.clone().as_str(), loglevel);
+        logger.log(LogLevel::Warning, format!("Logger of DNS server initialized. {}", &logger));
 
         // Set Cache
+        logger.log(LogLevel::Warning, "Setting Cache.");
         let cache = Cache::new(config.cache_time.into());
+        logger.log(LogLevel::Debug, format!("{}", cache));
+        logger.log(LogLevel::Warning, "Finish Setting Cache");
 
         // Create Socket
+        logger.log(LogLevel::Warning, "Creating Socket");
         let server_socket =
             UdpSocket::bind(("0.0.0.0", config.dns_port)).expect("Failed to bind socket");
         let _ = server_socket.set_nonblocking(true);
+        logger.log(LogLevel::Warning, "Finish Creating Socket");
 
-        // Set DNS Config
-        let mut file = File::open(config.dns_config).expect("Failed to open file");
-        let mut contents = String::new();
-        file.read_to_string(&mut contents)
-            .expect("Failed to read file");
-        let data: Vec<DNSRecord> = serde_json::from_str(&contents).expect("Failed to parse JSON");
-        let mut dns_config: HashMap<String, String> = HashMap::new();
-        for record in data {
-            logger.log(
-                LogLevel::Debug,
-                format!("Add {}---->{}", record.domain, record.ip),
-            );
-            dns_config.insert(record.domain, record.ip);
-        }
+        // Load DNS Config
+        let contents =
+            Self::load_config_file(&config.dns_config).expect("Failed to open dns config file");
+        let dns_config = Self::parse_dns_config(&contents).expect("Failed to parse DNS config");
 
         DNSServer {
             dns_config,
@@ -100,32 +113,22 @@ impl DNSServer {
         }
     }
 
-    pub fn add_handle(&mut self, value: JoinHandle<()>){
-        self.handles.push(value)
-    }
-
-    fn _load_dns_config(&mut self, config_file: &str) {
-        let mut file = File::open(config_file).expect("Failed to open file");
-        let mut contents = String::new();
-        file.read_to_string(&mut contents)
-            .expect("Failed to read file");
-        let data: Vec<DNSRecord> = serde_json::from_str(&contents).expect("Failed to parse JSON");
-        let mut dns_config: HashMap<String, String> = HashMap::new();
-        for record in data {
-            dns_config.insert(record.domain, record.ip);
-        }
+    pub fn add_handle(&mut self, handle: JoinHandle<()>) {
+        self.handles.push(handle)
     }
 
     fn resolve_dns(&mut self, domain: &str) -> String {
+        // Clean domain
         let cleaned_domain = clean_io(domain);
-        // Search in Cache
+
+        // Search in cache
         if let Some(ip) = self.cache.get(&cleaned_domain, false) {
             self.logger
                 .log(LogLevel::Info, &format!("Cached {}---->{}", domain, ip));
             return ip.clone();
         }
 
-        // Search in Local DNS
+        // Search in local DNS
         if let Some(ip) = self.dns_config.get(cleaned_domain.as_str()) {
             self.logger
                 .log(LogLevel::Info, &format!("Local DNS {}---->{}", domain, ip));
@@ -159,7 +162,7 @@ impl DNSServer {
             }
         }
 
-        // Search System DNS
+        // Search system DNS
         let cmd = format!("dig +short {}", cleaned_domain);
         match exec_shell_command(&cmd) {
             Ok(ip) => {
@@ -213,7 +216,7 @@ impl DNSServer {
         self.logger.log(LogLevel::Status, "Stop Listening.");
     }
 
-    pub fn processing(&mut self) {
+    pub fn processing_request(&mut self) {
         if self.stop_request.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         };
@@ -230,13 +233,12 @@ impl DNSServer {
         }
     }
 
-    pub fn commanding(&mut self, stdin_channel: &mut std::sync::mpsc::Receiver<String>) {
+    pub fn processing_command(&mut self, stdin_channel: &mut std::sync::mpsc::Receiver<String>) {
         let mut input = String::new();
 
         match stdin_channel.try_recv() {
             Ok(key) => {
                 input = clean_io(&key);
-                println!("{}", &input);
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => panic!("Channel disconnected"),
@@ -277,40 +279,38 @@ impl DNSServer {
         self.exit.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    pub fn run_listening(arc_mutex_dns: &Arc<Mutex<Self>>) {
+    pub fn run_processing_request(arc_mutex_dns: &Arc<Mutex<Self>>) {
         let cloned_dns = Arc::clone(&arc_mutex_dns);
         let cloned_dns_for_add_handle = Arc::clone(&arc_mutex_dns);
         let handle = thread::spawn(move || loop {
-            sleep(Duration::from_micros(1));
             let mut dns_server_copy = cloned_dns.lock().unwrap();
             if dns_server_copy.is_exited() {
                 break;
             }
-            dns_server_copy.processing();
+            dns_server_copy.processing_request();
         });
-        
+
         cloned_dns_for_add_handle.lock().unwrap().add_handle(handle);
     }
 
-    pub fn run_control(arc_mutex_dns: &Arc<Mutex<Self>>) {
+    pub fn run_processing_command(arc_mutex_dns: &Arc<Mutex<Self>>) {
         let mut stdin_channel: std::sync::mpsc::Receiver<String> =
             crate::utils::spawn_stdin_channel();
         let cloned_dns = Arc::clone(&arc_mutex_dns);
         let cloned_dns_for_add_handle = Arc::clone(&arc_mutex_dns);
         let handle = thread::spawn(move || loop {
-            sleep(Duration::from_micros(1));
             let mut dns_server_copy = cloned_dns.lock().unwrap();
             if dns_server_copy.is_exited() {
                 break;
             }
-            dns_server_copy.commanding(&mut stdin_channel);
+            dns_server_copy.processing_command(&mut stdin_channel);
             io::stdout().flush().unwrap();
         });
-        
+
         cloned_dns_for_add_handle.lock().unwrap().add_handle(handle);
     }
 
-    pub fn wait_exit(arc_mutex_dns: Arc<Mutex<Self>>){
+    pub fn wait_exit(arc_mutex_dns: Arc<Mutex<Self>>) {
         let mut handles = vec![];
         {
             let mut dns_server_guard = arc_mutex_dns.lock().unwrap();

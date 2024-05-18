@@ -63,8 +63,12 @@ impl Cache {
         self.running.load(Ordering::Relaxed)
     }
 
-    pub fn _get_expiration_time(&self) -> Duration {
+    pub fn get_expiration_time(&self) -> Duration {
         self.expiration_time
+    }
+
+    pub fn get_record_num(&self) -> usize {
+        self.cache.lock().unwrap().len()
     }
 }
 
@@ -77,7 +81,7 @@ impl Drop for Cache {
 impl fmt::Display for Cache {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let status = if self.is_running() { "Yes" } else { "No" };
-        write!(f, "[Cache] Running: {}", status)
+        write!(f, "[Cache] \"Running\": {}, \"Expiration Time\": {}s, Record Num: {}.", status, self.get_expiration_time().as_secs(), self.get_record_num())
     }
 }
 
