@@ -5,8 +5,7 @@ use std::{
     io::{self, Read, Write},
     net::UdpSocket,
     sync::{atomic::AtomicBool, mpsc::TryRecvError, Arc, Mutex},
-    thread::{self, sleep, JoinHandle},
-    time::Duration,
+    thread::{self, JoinHandle},
 };
 
 use log::{LogLevel, Logger};
@@ -32,6 +31,16 @@ struct Config {
     cache_time: u32,
 }
 
+#[derive(Debug)]
+pub enum HandleType {
+    ProcessingRequest,
+    ProcessingCommand,
+}
+pub struct HandleRecord {
+    handle_type: HandleType,
+    handle_val: JoinHandle<()>,
+}
+
 // pub struct DNSServerArcMutex(Arc<Mutex<DNSServer>>);
 // impl DNSServerArcMutex{
 //     pub fn listening(){}
@@ -48,7 +57,7 @@ pub struct DNSServer {
     cache: Cache,
     stop_request: AtomicBool,
     exit: AtomicBool,
-    handles: Vec<JoinHandle<()>>,
+    handles: Vec<HandleRecord>,
 }
 
 impl DNSServer {
@@ -78,25 +87,31 @@ impl DNSServer {
 
         // Set Logger
         let logger = Logger::new(config.name.clone().as_str(), loglevel);
-        logger.log(LogLevel::Warning, format!("Logger of DNS server initialized. {}", &logger));
+        logger.log(
+            LogLevel::Info,
+            format!("Logger of DNS server initialized. {}", &logger),
+        );
 
         // Set Cache
-        logger.log(LogLevel::Warning, "Setting Cache.");
+        logger.log(LogLevel::Info, "Setting Cache.");
         let cache = Cache::new(config.cache_time.into());
         logger.log(LogLevel::Debug, format!("{}", cache));
-        logger.log(LogLevel::Warning, "Finish Setting Cache");
+        logger.log(LogLevel::Info, "Finish Setting Cache");
 
         // Create Socket
-        logger.log(LogLevel::Warning, "Creating Socket");
+        logger.log(LogLevel::Info, "Creating Socket");
         let server_socket =
             UdpSocket::bind(("0.0.0.0", config.dns_port)).expect("Failed to bind socket");
         let _ = server_socket.set_nonblocking(true);
-        logger.log(LogLevel::Warning, "Finish Creating Socket");
+        logger.log(LogLevel::Info, "Finish Creating Socket");
 
         // Load DNS Config
+        logger.log(LogLevel::Info, "Loading DNS Config");
         let contents =
             Self::load_config_file(&config.dns_config).expect("Failed to open dns config file");
         let dns_config = Self::parse_dns_config(&contents).expect("Failed to parse DNS config");
+        logger.log(LogLevel::Debug, format!("[DNS Config] {:#?}", &dns_config));
+        logger.log(LogLevel::Info, "Finish Loading DNS Config");
 
         DNSServer {
             dns_config,
@@ -109,12 +124,12 @@ impl DNSServer {
             cache,
             stop_request: AtomicBool::new(false),
             exit: AtomicBool::new(false),
-            handles: Vec::<JoinHandle<()>>::new(),
+            handles: Vec::<HandleRecord>::new(),
         }
     }
 
-    pub fn add_handle(&mut self, handle: JoinHandle<()>) {
-        self.handles.push(handle)
+    pub fn add_handle_record(&mut self, handle_record: HandleRecord) {
+        self.handles.push(handle_record)
     }
 
     fn resolve_dns(&mut self, domain: &str) -> String {
@@ -283,14 +298,35 @@ impl DNSServer {
         let cloned_dns = Arc::clone(&arc_mutex_dns);
         let cloned_dns_for_add_handle = Arc::clone(&arc_mutex_dns);
         let handle = thread::spawn(move || loop {
-            let mut dns_server_copy = cloned_dns.lock().unwrap();
-            if dns_server_copy.is_exited() {
+            let mut dns_server_guard = cloned_dns.lock().unwrap();
+            if dns_server_guard.is_exited() {
                 break;
             }
-            dns_server_copy.processing_request();
+            dns_server_guard.processing_request();
         });
 
-        cloned_dns_for_add_handle.lock().unwrap().add_handle(handle);
+        let mut cloned_dns_for_add_handle_guard = cloned_dns_for_add_handle.lock().unwrap();
+        cloned_dns_for_add_handle_guard.add_handle_record(HandleRecord {
+            handle_type: HandleType::ProcessingRequest,
+            handle_val: handle,
+        });
+        cloned_dns_for_add_handle_guard
+            .logger
+            .log(LogLevel::Info, "Run Processing Request.");
+        if cloned_dns_for_add_handle_guard
+            .handles
+            .iter()
+            .any(|record| matches!(record.handle_type, HandleType::ProcessingCommand))
+        {
+            cloned_dns_for_add_handle_guard
+                .logger
+                .log(LogLevel::Info, "ProcessingCommand Found");
+        } else {
+            cloned_dns_for_add_handle_guard.logger.log(
+                LogLevel::Warning,
+                "ProcessingCommand Found. Command not Enabled.",
+            );
+        }
     }
 
     pub fn run_processing_command(arc_mutex_dns: &Arc<Mutex<Self>>) {
@@ -299,25 +335,53 @@ impl DNSServer {
         let cloned_dns = Arc::clone(&arc_mutex_dns);
         let cloned_dns_for_add_handle = Arc::clone(&arc_mutex_dns);
         let handle = thread::spawn(move || loop {
-            let mut dns_server_copy = cloned_dns.lock().unwrap();
-            if dns_server_copy.is_exited() {
+            let mut dns_server_guard = cloned_dns.lock().unwrap();
+            if dns_server_guard.is_exited() {
                 break;
             }
-            dns_server_copy.processing_command(&mut stdin_channel);
+            dns_server_guard.processing_command(&mut stdin_channel);
             io::stdout().flush().unwrap();
         });
 
-        cloned_dns_for_add_handle.lock().unwrap().add_handle(handle);
+        let mut cloned_dns_for_add_handle_guard = cloned_dns_for_add_handle.lock().unwrap();
+        cloned_dns_for_add_handle_guard.add_handle_record(HandleRecord {
+            handle_type: HandleType::ProcessingCommand,
+            handle_val: handle,
+        });
+        cloned_dns_for_add_handle_guard
+            .logger
+            .log(LogLevel::Info, "Run Processing Command.");
+        if cloned_dns_for_add_handle_guard
+            .handles
+            .iter()
+            .any(|record| matches!(record.handle_type, HandleType::ProcessingRequest))
+        {
+            cloned_dns_for_add_handle_guard
+                .logger
+                .log(LogLevel::Info, "ProcessingRequest Found, You Can Type Command to Control DNS Server.");
+        } else {
+            cloned_dns_for_add_handle_guard.logger.log(
+                LogLevel::Warning,
+                "ProcessingRequest Found. Command Ineffective",
+            );
+        }
     }
 
     pub fn wait_exit(arc_mutex_dns: Arc<Mutex<Self>>) {
         let mut handles = vec![];
+        let logger: Logger;
         {
             let mut dns_server_guard = arc_mutex_dns.lock().unwrap();
             handles.append(&mut dns_server_guard.handles);
+            logger = dns_server_guard.logger.clone();
         }
+
         for handle in handles {
-            handle.join().unwrap();
+            logger.log(
+                LogLevel::Warning,
+                format!("Wait {:#?} to Exit.", handle.handle_type),
+            );
+            handle.handle_val.join().unwrap();
         }
     }
 }
@@ -337,3 +401,4 @@ impl fmt::Debug for DNSServer {
         write!(f, "{}", self)
     }
 }
+

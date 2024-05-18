@@ -25,6 +25,7 @@ impl fmt::Display for LogLevel {
     }
 }
 
+#[derive(Clone)]
 pub struct Logger {
     logger_name: String,
     log_level: LogLevel,
