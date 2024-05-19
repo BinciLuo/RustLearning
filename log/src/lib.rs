@@ -15,11 +15,11 @@ impl fmt::Display for LogLevel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let level_str = match self {
             LogLevel::Debug => "\x1B[36m[Debug] ",
-            LogLevel::Info => "\x1B[34m[Info] ",
+            LogLevel::Info => "\x1B[32m[Info] ",
             LogLevel::Warning => "\x1B[33m[Warning] ",
             LogLevel::Error => "\x1B[31m[Error] ",
             LogLevel::Status => "\x1B[33m[Status] ",
-            LogLevel::Fatal => "\x1B[36m[Fatal] ",
+            LogLevel::Fatal => "\x1B[31m[Fatal] ",
         };
         write!(f, "{}", level_str)
     }

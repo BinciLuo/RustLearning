@@ -38,6 +38,7 @@ pub enum HandleType {
 }
 pub struct HandleRecord {
     handle_type: HandleType,
+    logged: bool,
     handle_val: JoinHandle<()>,
 }
 
@@ -82,10 +83,12 @@ impl DNSServer {
 
         // Set Logger
         let logger = Logger::new(config.name.clone().as_str(), loglevel);
+        
         logger.log(
             LogLevel::Info,
-            format!("Logger of DNS server initialized. {}", &logger),
+            format!("Logger of DNS server initialized. {}\n", &logger),
         );
+        logger.log(LogLevel::Info, "--------------------INIT--------------------");
 
         // Set Cache
         logger.log(LogLevel::Info, "Setting Cache.");
@@ -107,6 +110,8 @@ impl DNSServer {
         let dns_config = Self::parse_dns_config(&contents).expect("Failed to parse DNS config");
         logger.log(LogLevel::Debug, format!("[DNS Config] {:#?}", &dns_config));
         logger.log(LogLevel::Info, "Finish Loading DNS Config");
+        logger.log(LogLevel::Info, "--------------------INIT--------------------");
+
 
         DNSServer {
             dns_config,
@@ -218,7 +223,7 @@ impl DNSServer {
         }
     }
 
-    pub fn processing_command(&self, stdin_channel: &mut std::sync::mpsc::Receiver<String>) {
+    pub fn processing_command(self: &Arc<DNSServer>, stdin_channel: &mut std::sync::mpsc::Receiver<String>) {
         let mut input = String::new();
 
         match stdin_channel.try_recv() {
@@ -236,8 +241,17 @@ impl DNSServer {
             self.logger.log(LogLevel::Warning, "Start Listening");
             self.start();
         } else if input == "exit" {
-            self.logger.log(LogLevel::Debug, "DNS Server Exited");
+            self.logger.log(LogLevel::Warning, "DNS Server Exiting...");
             self.exit();
+        } else if input == "listen" {
+            self.logger.log(LogLevel::Warning, "Trying Statr ProcessingRequest...");
+            if self.handles.lock().unwrap().iter().any(|handle| matches!(handle.handle_type, HandleType::ProcessingRequest)){
+                self.logger.log(LogLevel::Warning, "Found Existed ProcessingRequest");
+                self.start();  
+            } else {
+                self.logger.log(LogLevel::Warning, "Existed ProcessingRequest not Found. Creating One...");
+                Self::run_processing_request(self);
+            }
         } else if input != "" {
             self.logger.log(
                 LogLevel::Debug,
@@ -275,6 +289,7 @@ impl DNSServer {
 
         arc_dns.add_handle_record(HandleRecord {
             handle_type: HandleType::ProcessingRequest,
+            logged: false,
             handle_val: handle,
         });
         arc_dns
@@ -293,7 +308,7 @@ impl DNSServer {
         } else {
             arc_dns.logger.log(
                 LogLevel::Warning,
-                "ProcessingCommand Found. Command not Enabled.",
+                "ProcessingCommand not Found. Command not Enabled.",
             );
         }
     }
@@ -312,6 +327,7 @@ impl DNSServer {
 
         arc_dns.add_handle_record(HandleRecord {
             handle_type: HandleType::ProcessingCommand,
+            logged: false,
             handle_val: handle,
         });
         arc_dns
@@ -331,7 +347,7 @@ impl DNSServer {
         } else {
             arc_dns.logger.log(
                 LogLevel::Warning,
-                "ProcessingRequest Found. Command Ineffective",
+                "ProcessingRequest not Found. Command Ineffective",
             );
         }
     }
@@ -339,16 +355,25 @@ impl DNSServer {
     pub fn wait_exit(arc_mutex_dns: &Arc<Self>) {
         let mut handles = vec![];
 
-        {
-            let mut guard = arc_mutex_dns.handles.lock().unwrap();
-            handles.extend(guard.drain(..));
-        }
-
-        for handle in &handles {
-            arc_mutex_dns.logger.log(
-                LogLevel::Warning,
-                format!("Wait {:#?} to Exit.", handle.handle_type),
-            );
+        loop{
+            {
+                let mut guard = arc_mutex_dns.handles.lock().unwrap();
+                for handle in guard.iter_mut(){
+                    if !handle.logged{
+                        arc_mutex_dns.logger.log(
+                            LogLevel::Warning,
+                            format!("Wait {:#?} to Exit.", handle.handle_type),
+                        );
+                        handle.logged = true;
+                    } 
+                }
+            }
+            
+            if arc_mutex_dns.is_exited(){
+                let mut guard = arc_mutex_dns.handles.lock().unwrap();
+                handles.extend(guard.drain(..));
+                break;
+            }
         }
 
         for handle in handles {
@@ -358,6 +383,11 @@ impl DNSServer {
                 format!("{:#?} Exited.", handle.handle_type),
             );
         }
+
+        arc_mutex_dns.logger.log(
+            LogLevel::Warning,
+            format!("All Handles Exited. DNS Server Exited."),
+        );
     }
 }
 
