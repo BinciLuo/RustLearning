@@ -75,7 +75,7 @@ impl DNSServer {
 
     pub fn new(config_fp: &str, loglevel: LogLevel) -> Self {
         // Read config
-        let mut file = File::open("config.json").expect("Unable to open file");
+        let mut file = File::open(config_fp).expect("Unable to open file");
         let mut contents = String::new();
         file.read_to_string(&mut contents)
             .expect("Unable to read file");
